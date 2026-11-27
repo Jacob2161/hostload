@@ -16,7 +16,11 @@ func ExampleReader() {
 	minute.Add(reader.Read(time.Now().Add(time.Second)))
 	summary := minute.Close()
 	if summary.CPUAverage != nil {
-		fmt.Printf("CPU %.0f%% on average, %.0f%% at most\n", *summary.CPUAverage*100, *summary.CPUMaximum*100)
+		fmt.Printf(
+			"CPU %.0f%% on average, %.0f%% at most\n",
+			*summary.CPUAverage*100,
+			*summary.CPUMaximum*100,
+		)
 	}
 	if limit := hostload.MemoryLimit(); limit > 0 {
 		fmt.Printf("this process may use %d MiB\n", limit>>20)

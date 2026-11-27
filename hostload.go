@@ -22,19 +22,55 @@ import (
 	"time"
 )
 
-// Reading is one look at the machine. Every value is a ratio from 0 to 1,
-// nil when the system does not report it.
+// Reading is one look at the machine. Every field is a ratio from 0 to 1,
+// nil when the system does not report it. The pressure fields are the share
+// of the last minute (avg60) in which some, or all (full), tasks stalled on
+// a resource. Read returns new numbers each time and never changes them
+// afterwards.
 type Reading struct {
-	CPU    *float64
+	// CPU is the share of the CPU time available to the process that was
+	// used since the previous Read.
+	CPU *float64
+	// Memory is the share of the memory available to the process in use.
 	Memory *float64
-	// Pressure is the share of the last minute (avg60) in which some, or
-	// all (full), tasks stalled on each resource.
-	CPUSome    *float64
-	CPUFull    *float64
+	// CPUSome is the share of the last minute some tasks stalled on CPU.
+	CPUSome *float64
+	// CPUFull is the share of the last minute all tasks stalled on CPU.
+	CPUFull *float64
+	// MemorySome is the share of the last minute some tasks stalled on
+	// memory.
 	MemorySome *float64
+	// MemoryFull is the share of the last minute all tasks stalled on
+	// memory.
 	MemoryFull *float64
-	IOSome     *float64
-	IOFull     *float64
+	// IOSome is the share of the last minute some tasks stalled on I/O.
+	IOSome *float64
+	// IOFull is the share of the last minute all tasks stalled on I/O.
+	IOFull *float64
+}
+
+// copied returns a Reading with the same numbers that shares no pointer with
+// r, so its holder owns it.
+func (r Reading) copied() Reading {
+	return Reading{
+		CPU:        copiedShare(r.CPU),
+		Memory:     copiedShare(r.Memory),
+		CPUSome:    copiedShare(r.CPUSome),
+		CPUFull:    copiedShare(r.CPUFull),
+		MemorySome: copiedShare(r.MemorySome),
+		MemoryFull: copiedShare(r.MemoryFull),
+		IOSome:     copiedShare(r.IOSome),
+		IOFull:     copiedShare(r.IOFull),
+	}
+}
+
+// copiedShare returns a new pointer to *share, or nil.
+func copiedShare(share *float64) *float64 {
+	if share == nil {
+		return nil
+	}
+	copied := *share
+	return &copied
 }
 
 // Reader reads the machine's load from a proc and a cgroup file system. It is
@@ -65,13 +101,19 @@ func NewReader() *Reader {
 // newReader reads proc and the cgroup directory under cgroupRoot, "" without
 // one.
 func newReader(proc string, cgroup string, cgroupRoot string) *Reader {
-	return &Reader{proc: proc, cgroup: cgroup, cgroupRoot: filepath.Clean(cgroupRoot), cpus: runtime.NumCPU()}
+	return &Reader{
+		proc:       proc,
+		cgroup:     cgroup,
+		cgroupRoot: filepath.Clean(cgroupRoot),
+		cpus:       runtime.NumCPU(),
+	}
 }
 
 // cgroupPath runs from the process's cgroup directory up to the mount's root.
 func (r *Reader) cgroupPath(yield func(string) bool) {
 	for directory := r.cgroup; ; directory = filepath.Dir(directory) {
-		if !yield(directory) || directory == r.cgroupRoot || !strings.HasPrefix(directory, r.cgroupRoot) {
+		if !yield(directory) || directory == r.cgroupRoot ||
+			!strings.HasPrefix(directory, r.cgroupRoot) {
 			return
 		}
 	}
@@ -180,7 +222,7 @@ func (r *Reader) procCPU() (float64, float64, bool) {
 	}
 	var total, idle float64
 	for i, field := range fields[1:] {
-		value, err := strconv.ParseFloat(field, 64)
+		ticks, err := strconv.ParseFloat(field, 64)
 		if err != nil {
 			return 0, 0, false
 		}
@@ -188,9 +230,9 @@ func (r *Reader) procCPU() (float64, float64, bool) {
 		if i >= 8 {
 			break
 		}
-		total += value
+		total += ticks
 		if i == 3 || i == 4 {
-			idle += value
+			idle += ticks
 		}
 	}
 	return total - idle, total, true
@@ -280,8 +322,8 @@ func readKeyed(path string, key string) (float64, bool) {
 		if len(fields) < 2 || fields[0] != key {
 			continue
 		}
-		value, err := strconv.ParseFloat(fields[1], 64)
-		return value, err == nil
+		number, err := strconv.ParseFloat(fields[1], 64)
+		return number, err == nil
 	}
 	return 0, false
 }

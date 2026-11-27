@@ -26,10 +26,12 @@ func writeFiles(t *testing.T, directory string, files map[string]string) {
 func TestReadMachine(t *testing.T) {
 	proc := t.TempDir()
 	writeFiles(t, proc, map[string]string{
-		"stat":            "cpu  100 0 100 700 100 0 0 0 0 0\ncpu0 1 2 3\n",
-		"meminfo":         "MemTotal:       1000 kB\nMemFree:  100 kB\nMemAvailable:    250 kB\n",
-		"pressure/cpu":    "some avg10=1.00 avg60=12.50 avg300=3.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
-		"pressure/memory": "some avg10=0.00 avg60=4.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=2.00 avg300=0.00 total=0\n",
+		"stat":    "cpu  100 0 100 700 100 0 0 0 0 0\ncpu0 1 2 3\n",
+		"meminfo": "MemTotal:       1000 kB\nMemFree:  100 kB\nMemAvailable:    250 kB\n",
+		"pressure/cpu": "some avg10=1.00 avg60=12.50 avg300=3.00 total=1\n" +
+			"full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+		"pressure/memory": "some avg10=0.00 avg60=4.00 avg300=0.00 total=0\n" +
+			"full avg10=0.00 avg60=2.00 avg300=0.00 total=0\n",
 	})
 	reader := newReader(proc, "", "")
 	start := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
@@ -70,7 +72,8 @@ func TestReadCgroup(t *testing.T) {
 		"memory.max":         "1000\n",
 		"memory.current":     "600\n",
 		"memory.stat":        "anon 300\ninactive_file 200\n",
-		"io.pressure":        "some avg10=0.00 avg60=40.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=10.00 avg300=0.00 total=0\n",
+		"io.pressure": "some avg10=0.00 avg60=40.00 avg300=0.00 total=0\n" +
+			"full avg10=0.00 avg60=10.00 avg300=0.00 total=0\n",
 	})
 	reader := newReader(proc, cgroup, cgroup)
 	start := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
@@ -96,7 +99,11 @@ func TestReadNothing(t *testing.T) {
 	if reading != (Reading{}) {
 		t.Fatalf("a system without the files: %+v", reading)
 	}
-	if ownCgroup(systemFiles{processCgroup: filepath.Join(t.TempDir(), "cgroup"), cgroupRoot: t.TempDir()}) != "" {
+	missing := systemFiles{
+		processCgroup: filepath.Join(t.TempDir(), "cgroup"),
+		cgroupRoot:    t.TempDir(),
+	}
+	if ownCgroup(missing) != "" {
 		t.Fatal("a cgroup without /proc/self/cgroup")
 	}
 }
@@ -139,13 +146,34 @@ func TestMinuteClose(t *testing.T) {
 	summary := minute.Close()
 	if summary.CPUAverage == nil || *summary.CPUAverage != 0.4 || *summary.CPUMaximum != 0.6 ||
 		*summary.IOPressure != 0.6 || summary.MemoryAverage != nil {
-		t.Fatalf("summary: %+v", summary)
+		t.Fatalf("summary: %+v, want CPU average 0.4, CPU and I/O maxima 0.6, no memory", summary)
 	}
 	if next := minute.Close(); next.CPUAverage != nil || next.IOPressure != nil {
-		t.Fatalf("the next minute: %+v", next)
+		t.Fatalf("the next minute: %+v, want it empty", next)
 	}
 	if newest := minute.Newest(); newest.CPU == nil || *newest.CPU != high {
-		t.Fatal("the newest reading is not kept")
+		t.Fatalf("Newest().CPU = %v, want %v", newest.CPU, high)
+	}
+}
+
+// TestMinuteCopiesReadings checks that Minute owns what it holds: a caller
+// that reuses a reading's numbers after Add, or changes what Newest
+// returned, changes neither the newest reading nor the summary.
+func TestMinuteCopiesReadings(t *testing.T) {
+	share := 0.25
+	var minute Minute
+	minute.Add(Reading{CPU: &share})
+	share = 0.75
+	newest := minute.Newest()
+	if newest.CPU == nil || *newest.CPU != 0.25 {
+		t.Fatalf("after the caller reused its number, Newest().CPU = %v, want 0.25", newest.CPU)
+	}
+	*newest.CPU = 0.5
+	if again := minute.Newest(); *again.CPU != 0.25 {
+		t.Fatalf("after changing a returned reading, Newest().CPU = %v, want 0.25", *again.CPU)
+	}
+	if summary := minute.Close(); *summary.CPUMaximum != 0.25 {
+		t.Fatalf("CPUMaximum = %v, want 0.25", *summary.CPUMaximum)
 	}
 }
 
@@ -154,7 +182,11 @@ func TestMinuteClose(t *testing.T) {
 func TestReadInheritedLimits(t *testing.T) {
 	proc := t.TempDir()
 	root := t.TempDir()
-	writeFiles(t, proc, map[string]string{"meminfo": "MemTotal: 1000000 kB\nMemAvailable: 900000 kB\n"})
+	writeFiles(
+		t,
+		proc,
+		map[string]string{"meminfo": "MemTotal: 1000000 kB\nMemAvailable: 900000 kB\n"},
+	)
 	writeFiles(t, root, map[string]string{
 		"tenant/cpu.max":                "100000 100000\n",
 		"tenant/memory.max":             "1000\n",
@@ -192,8 +224,13 @@ func TestQuotaChangeKeepsMeasuring(t *testing.T) {
 	start := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	reader.Read(start)
 	// Two cores now, used for 10 s over 10 s: half.
-	writeFiles(t, cgroup, map[string]string{"cpu.max": "200000 100000\n", "cpu.stat": "usage_usec 10000000\n"})
-	if reading := reader.Read(start.Add(10 * time.Second)); reading.CPU == nil || *reading.CPU != 0.5 {
+	writeFiles(
+		t,
+		cgroup,
+		map[string]string{"cpu.max": "200000 100000\n", "cpu.stat": "usage_usec 10000000\n"},
+	)
+	if reading := reader.Read(start.Add(10 * time.Second)); reading.CPU == nil ||
+		*reading.CPU != 0.5 {
 		t.Fatalf("CPU %v after the quota doubled, want 0.5", reading.CPU)
 	}
 }
