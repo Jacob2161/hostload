@@ -31,4 +31,4 @@ limit := hostload.MemoryLimit() // cgroup memory.max, capped at MemTotal
 - It only reads files. Values a system does not report (macOS, a kernel without PSI) are nil, never
   a made-up zero.
 
-Tested on the two newest Go releases. Licensed under the MIT license.
+Requires Go 1.27. Licensed under the MIT license.
